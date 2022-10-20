@@ -1,0 +1,84 @@
+name: Deploy to Caprover
+
+on: 
+  push:
+    branches: 
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+        contents: read
+        packages: write
+    outputs:
+        # output the image tag that was built and pushed so we can deploy this image tag in the deploy job
+        image-tag: ${{ steps.set-image-tag.outputs.image-tag }}
+
+    steps:
+    # Checkout repo
+      - name: Checkout repo
+        uses: actions/checkout@v2
+
+    # Install QEMU, to build docker image
+      - name: Docker Setup QEMU
+        uses: docker/setup-qemu-action@v2.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GH_TOKEN }}
+
+      # This creates docker tags
+      - name: Docker meta
+        id: docker-meta
+        uses: docker/metadata-action@v4
+        with:
+            # list of Docker images to use as base name for tags
+            images: |
+                ghcr.io/tendo-technologies-limited/services/cors-header
+            # generate Docker tags based on the following events/attributes
+            tags: |
+                type=semver,priority=900,pattern={{version}},prefix=staging-
+                type=schedule
+                type=ref,event=branch
+                type=ref,event=pr
+                type=semver,pattern={{major}}.{{minor}}
+                type=semver,pattern={{major}}
+                type=sha
+                
+
+      - name: 'Build and push docker image'
+        uses: docker/build-push-action@v3
+        with:
+            file: 'Dockerfile'
+            context: '.'
+            platforms: linux/amd64
+            push: ${{ github.event_name != 'pull_request' }}
+            tags: ${{ steps.docker-meta.outputs.tags }}
+            labels: ${{ steps.docker-meta.outputs.labels }}
+
+      - id: set-image-tag
+        run: echo "::set-output name=image-tag::${{ fromJson(steps.docker-meta.outputs.json).tags[0] }}"
+
+      - name: Node setup
+        uses: actions/setup-node@v2
+        with:
+          node-version: 16
+
+    # Install caprover-cli
+      - name: Install Caprover
+        run: npm install -g caprover
+
+      - name: Deploy
+        env: 
+          APP_NAME: ${{secrets.CAPROVER_APP}}
+          URL: ${{secrets.CAPROVER_DOMAIN}}
+          TOKEN: ${{secrets.CAPROVER_APP_TOKEN}}
+          IMAGE_NAME: ${{ steps.set-image-tag.outputs.image-tag }}
+        run: caprover deploy --host $URL --appToken $TOKEN --imageName $IMAGE_NAME   --appName $APP_NAME 
